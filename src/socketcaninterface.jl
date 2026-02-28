@@ -44,7 +44,7 @@ mutable struct SocketCanDriver <: AbstractCanDriver
         handler = ccall(:socket, Cint, (Cint, Cint, Cint), PF_CAN, SOCK_RAW, CAN_RAW)
         handler < 0 && throw(SocketCANError("socket() failed: $(strerror(Libc.errno()))"))
 
-        index = ccall(:if_nametoindex, UInt32, (CString,), channelname)
+        index = ccall(:if_nametoindex, UInt32, (Cstring,), channelname)
         if index == 0
             close(handler)
             throw(SocketCANError("if_nametoindex('$channelname') failed: $(strerror(Libc.errno()))"))
@@ -85,7 +85,7 @@ function read(sc::SocketCanDriver)
 end
 
 function write(sc::SocketCanDriver, canid::UInt32, data::NTuple{8, UInt8})
-    raw = Ref{CanFrameRaw}(canid | CAN_EFF_FLAG, UInt8(CAN_MAX_DLC), 0x00, 0x00, 0x00, data)
+    raw = Ref{CanFrameRaw}(CanFrameRaw(canid | CAN_EFF_FLAG, UInt8(CAN_MAX_DLC), 0x00, 0x00, 0x00, data))
     nbytes = ccall(:write, Cssize_t, (Cint, Ptr{CanFrameRaw}, Csize_t), Cint(sc.handler), raw, Csize_t(sizeof(CanFrameRaw)))
     if nbytes != sizeof(CanFrameRaw)
         err = Libc.errno()
