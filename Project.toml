@@ -1,10 +1,9 @@
 name = "CANInterface"
 uuid = "44756509-f907-4102-b943-bbf9a270a596"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["A-C1 <aditya2192@gmail.com>"]
 
 [deps]
-Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
 
 [compat]
-Printf = "1.11.0"
+julia = "1.7"
