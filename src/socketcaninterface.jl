@@ -88,7 +88,7 @@ mutable struct SocketCanDriver <: AbstractCanDriver
             throw(SocketCANError("if_nametoindex('$channelname') failed: $(Libc.strerror(Libc.errno()))"))
         end
         addrRef = Ref{SockAddrCAN}(SockAddrCAN(UInt16(AF_CAN), UInt16(0), Cint(index), ntuple(_->UInt8(0), 8)))
-        bindres = ccall(:bind, Cint, (Ptr{SockAddrCAN}, UInt32, Cint), handler, addrRef, UInt32(sizeof(SockAddrCAN)))
+        bindres = ccall(:bind, Cint, (Cint, Ptr{SockAddrCAN}, UInt32), handler, addrRef, UInt32(sizeof(SockAddrCAN)))
 
         if bindres < 0
             ccall(:close, Cint, (Cint,), handler)
