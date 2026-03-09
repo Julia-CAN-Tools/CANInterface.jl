@@ -77,6 +77,10 @@ mutable struct SocketCanDriver <: AbstractCanDriver
     channelname::String
     handler::Int32
     @atomic closed::Bool
+    _read_buf::Base.RefValue{CanFrameRaw}   # reused every read() ccall
+    _write_buf::Base.RefValue{CanFrameRaw}  # reused every write() ccall
+    _poll_buf::Base.RefValue{PollFD}        # reused every poll() ccall
+    _int_buf::Base.RefValue{Cint}           # reused by set_recv_own_msgs!()
 
     function SocketCanDriver(channelname::String)
         handler = ccall(:socket, Cint, (Cint, Cint, Cint), PF_CAN, SOCK_RAW, CAN_RAW)
@@ -95,7 +99,10 @@ mutable struct SocketCanDriver <: AbstractCanDriver
             throw(SocketCANError("bind() failed on '$channelname': $(Libc.strerror(Libc.errno()))"))
         end
 
-        sc = new(channelname, handler, false)
+        sc = new(channelname, handler, false,
+                 Ref{CanFrameRaw}(), Ref{CanFrameRaw}(),
+                 Ref(PollFD(Cint(0), POLLIN, Cshort(0))),
+                 Ref(Cint(0)))
         finalizer(_close_fd, sc)
         return sc
     end
@@ -128,7 +135,8 @@ function read(sc::SocketCanDriver; timeout_ms::Int=-1)
     @atomic(sc.closed) && throw(SocketCANError("read() on closed SocketCanDriver '$(sc.channelname)'"))
 
     if timeout_ms >= 0
-        pfd = Ref(PollFD(Cint(sc.handler), POLLIN, Cshort(0)))
+        pfd = sc._poll_buf
+        pfd[] = PollFD(Cint(sc.handler), POLLIN, Cshort(0))
         ret = ccall(:poll, Cint, (Ptr{PollFD}, Cuint, Cint), pfd, Cuint(1), Cint(timeout_ms))
         if ret == 0
             return nothing  # timeout
@@ -142,7 +150,7 @@ function read(sc::SocketCanDriver; timeout_ms::Int=-1)
         (revents & (POLLERR | POLLHUP | POLLNVAL)) != 0 && return nothing
     end
 
-    raw = Ref{CanFrameRaw}()
+    raw = sc._read_buf
     nbytes = ccall(:read, Cssize_t, (Cint, Ptr{CanFrameRaw}, Csize_t),
                     Cint(sc.handler), raw, Csize_t(sizeof(CanFrameRaw)))
     if nbytes == sizeof(CanFrameRaw)
@@ -178,11 +186,23 @@ function write(sc::SocketCanDriver, canid::UInt32, data::NTuple{8,UInt8}; extend
     @atomic(sc.closed) && throw(SocketCANError("write() on closed SocketCanDriver '$(sc.channelname)'"))
     _validate_canid(canid, extended)
     id = extended ? (canid | CAN_EFF_FLAG) : canid
-    raw = Ref{CanFrameRaw}(CanFrameRaw(id, UInt8(CAN_MAX_DLC), 0x00, 0x00, 0x00, data))
+    raw = sc._write_buf
+    raw[] = CanFrameRaw(id, UInt8(CAN_MAX_DLC), 0x00, 0x00, 0x00, data)
     nbytes = ccall(:write, Cssize_t, (Cint, Ptr{CanFrameRaw}, Csize_t),
                     Cint(sc.handler), raw, Csize_t(sizeof(CanFrameRaw)))
     nbytes == sizeof(CanFrameRaw) && return nothing
     throw(SocketCANError("write() failed on '$(sc.channelname)': $(Libc.strerror(Libc.errno()))"))
+end
+
+@inline function _make_data_tuple(data::AbstractVector{UInt8}, dlc::Int)::NTuple{8,UInt8}
+    (dlc >= 1 ? data[1] : UInt8(0),
+     dlc >= 2 ? data[2] : UInt8(0),
+     dlc >= 3 ? data[3] : UInt8(0),
+     dlc >= 4 ? data[4] : UInt8(0),
+     dlc >= 5 ? data[5] : UInt8(0),
+     dlc >= 6 ? data[6] : UInt8(0),
+     dlc >= 7 ? data[7] : UInt8(0),
+     dlc >= 8 ? data[8] : UInt8(0))
 end
 
 """
@@ -194,11 +214,12 @@ When `extended=true` (default), `CAN_EFF_FLAG` is ORed into `canid`.
 function write(sc::SocketCanDriver, canid::UInt32, data::AbstractVector{UInt8}; extended::Bool=true)
     dlc = length(data)
     0 <= dlc <= CAN_MAX_DLC || throw(ArgumentError("CAN data length must be 0-$CAN_MAX_DLC, got $dlc"))
-    bytes = ntuple(i -> i <= dlc ? UInt8(data[i]) : UInt8(0), CAN_MAX_DLC)
     @atomic(sc.closed) && throw(SocketCANError("write() on closed SocketCanDriver '$(sc.channelname)'"))
     _validate_canid(canid, extended)
     id = extended ? (canid | CAN_EFF_FLAG) : canid
-    raw = Ref{CanFrameRaw}(CanFrameRaw(id, UInt8(dlc), 0x00, 0x00, 0x00, bytes))
+    bytes = _make_data_tuple(data, dlc)
+    raw = sc._write_buf
+    raw[] = CanFrameRaw(id, UInt8(dlc), 0x00, 0x00, 0x00, bytes)
     nbytes = ccall(:write, Cssize_t, (Cint, Ptr{CanFrameRaw}, Csize_t),
                     Cint(sc.handler), raw, Csize_t(sizeof(CanFrameRaw)))
     nbytes == sizeof(CanFrameRaw) && return nothing
@@ -231,7 +252,8 @@ frames it sends itself. Useful for loopback testing.
 """
 function set_recv_own_msgs!(sc::SocketCanDriver, enabled::Bool)
     @atomic(sc.closed) && throw(SocketCANError("set_recv_own_msgs!() on closed SocketCanDriver '$(sc.channelname)'"))
-    val = Ref(Cint(enabled ? 1 : 0))
+    val = sc._int_buf
+    val[] = Cint(enabled ? 1 : 0)
     ret = ccall(:setsockopt, Cint,
         (Cint, Cint, Cint, Ptr{Cint}, UInt32),
         sc.handler, SOL_CAN_RAW, CAN_RAW_RECV_OWN_MSGS,
