@@ -69,13 +69,18 @@ function _close_fd(sc)
     old = @atomicswap sc.closed = true
     old && return nothing
     fd = sc.handler
-    fd >= 0 && ccall(:close, Cint, (Cint,), fd)
+    if fd >= 0
+        ret = ccall(:close, Cint, (Cint,), fd)
+        if ret < 0
+            @warn "close() failed on CAN socket" channel = sc.channelname errno = Libc.errno()
+        end
+    end
     return nothing
 end
 
 mutable struct SocketCanDriver <: AbstractCanDriver
     channelname::String
-    handler::Int32
+    handler::Cint
     @atomic closed::Bool
     _read_buf::Base.RefValue{CanFrameRaw}   # reused every read() ccall
     _write_buf::Base.RefValue{CanFrameRaw}  # reused every write() ccall
